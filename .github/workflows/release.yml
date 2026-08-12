@@ -1,0 +1,47 @@
+name: Release
+
+# 打 tag v* 时自动构建双平台二进制并发布 GitHub Release
+# 用法: git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: true
+
+      - name: Go test
+        run: go test ./...
+
+      - name: Build linux/amd64
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o pmail_hermes_push_amd64 .
+
+      - name: Build linux/arm64
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o pmail_hermes_push_arm64 .
+
+      - name: Verify binaries
+        run: |
+          file pmail_hermes_push_amd64 pmail_hermes_push_arm64
+          test -x pmail_hermes_push_amd64 && test -x pmail_hermes_push_arm64
+          echo "binaries OK"
+
+      - name: Create Release & Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            pmail_hermes_push_amd64
+            pmail_hermes_push_arm64
+          generate_release_notes: true
