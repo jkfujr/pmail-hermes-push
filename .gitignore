@@ -1,0 +1,11 @@
+# binaries
+pmail_hermes_push
+pmail_hermes_push_*
+*.exe
+
+# config (real secrets go here)
+pmail_hermes_push_config.json
+
+# editor
+.vscode/
+.idea/
