@@ -52,9 +52,22 @@ chmod +x /path/to/pmail/plugins/pmail_hermes_push
 
 PMail 启动时会自动拉起 plugins 目录下的插件。
 
-### 3. 写配置
+### 3. 配置（推荐：UI 配置，实时生效）
 
-创建 `/path/to/pmail/plugins/pmail_hermes_push_config.json`：
+PMail 后台 → 插件设置页，找到 pmail-hermes-push，直接填表单保存即可，**无需重启**：
+
+| 配置项 | 说明 |
+|---|---|
+| Webhook URL | Hermes webhook 完整地址 |
+| Webhook Secret | HMAC 密钥，与 webhook 订阅 secret 一致；**留空表示不修改** |
+| 通知的收件人 UserID | 逗号分隔；1=管理员。清空=全部用户 |
+| 正文最大长度 | 正文截断长度（默认 5000） |
+| 事件名 | 默认 receive_save_after |
+| 超时 / 重试 | HTTP 超时秒数 / 失败重试次数 |
+
+页面里有「发送测试邮件」按钮，一键验证到 Hermes 的链路。
+
+也可以手写配置文件 `/path/to/pmail/plugins/pmail_hermes_push_config.json`（修改后需重启 PMail 生效）：
 
 ```json
 {
@@ -78,7 +91,7 @@ PMail 启动时会自动拉起 plugins 目录下的插件。
 | retryCount | - | 2 | 失败重试次数 |
 | eventType | - | receive_save_after | 发送给 Hermes 的事件名，需在订阅 events 列表里 |
 
-修改配置后重启 PMail（或重启插件进程）生效。
+> 手写配置文件方式修改后需重启 PMail 生效；UI 方式保存即实时生效。
 
 ### 4. Hermes 侧建订阅
 

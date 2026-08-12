@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pmail-hermes-push 设置</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; background:#f5f6fa; margin:0; padding:24px; color:#333; }
+  .card { max-width:560px; margin:0 auto; background:#fff; border-radius:12px; padding:24px 28px; box-shadow:0 2px 8px rgba(0,0,0,.06); }
+  h2 { margin-top:0; font-size:18px; }
+  label { display:block; margin:14px 0 4px; font-size:13px; color:#555; }
+  input { width:100%; box-sizing:border-box; padding:8px 10px; border:1px solid #d8dce6; border-radius:6px; font-size:14px; }
+  input:focus { outline:none; border-color:#4a7dff; }
+  .hint { font-size:12px; color:#999; margin-top:4px; }
+  .row { display:flex; gap:12px; }
+  .row > div { flex:1; }
+  .actions { margin-top:20px; }
+  button { padding:10px 18px; border:none; border-radius:6px; font-size:14px; cursor:pointer; }
+  .btn-primary { background:#4a7dff; color:#fff; }
+  .btn-test { background:#fff; color:#4a7dff; border:1px solid #4a7dff; margin-left:10px; }
+  button:disabled { opacity:.6; cursor:not-allowed; }
+  #msg { margin-top:14px; font-size:13px; min-height:18px; }
+  .ok { color:#2e7d32; } .err { color:#c62828; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>pmail-hermes-push 设置</h2>
+  <p class="hint">新邮件 &rarr; Hermes webhook。保存后实时生效，无需重启 PMail。</p>
+
+  <label>Webhook URL</label>
+  <input id="webhookUrl" type="text" placeholder="http://100.100.0.41:8644/webhooks/pmail-inbox">
+  <div class="hint">Hermes webhook 订阅地址</div>
+
+  <label>Webhook Secret</label>
+  <input id="webhookSecret" type="password" placeholder="未设置">
+  <div class="hint">HMAC 密钥，与 Hermes 订阅 secret 一致。留空表示不修改</div>
+
+  <label>通知的收件人 UserID</label>
+  <input id="notifyUserIds" type="text" placeholder="1,2" value="1">
+  <div class="hint">逗号分隔；1=管理员。清空表示全部用户</div>
+
+  <div class="row">
+    <div>
+      <label>正文最大长度</label>
+      <input id="maxTextLength" type="number" value="5000">
+    </div>
+    <div>
+      <label>事件名</label>
+      <input id="eventType" type="text" value="receive_save_after">
+    </div>
+  </div>
+
+  <div class="row">
+    <div>
+      <label>超时（秒）</label>
+      <input id="timeoutSec" type="number" value="10">
+    </div>
+    <div>
+      <label>重试次数</label>
+      <input id="retryCount" type="number" value="2">
+    </div>
+  </div>
+
+  <div class="actions">
+    <button class="btn-primary" id="saveBtn">保存</button>
+    <button class="btn-test" id="testBtn">发送测试邮件</button>
+  </div>
+  <div id="msg"></div>
+</div>
+
+<script>
+const BASE = '/api/plugin/settings/pmail_hermes_push';
+const $ = id => document.getElementById(id);
+
+function show(msg, ok) {
+  const el = $('msg');
+  el.textContent = msg;
+  el.className = ok ? 'ok' : 'err';
+}
+
+async function load() {
+  try {
+    const res = await fetch(BASE + '/getSetting');
+    const data = await res.json();
+    if (data.code !== 0) { show('加载失败: ' + data.message, false); return; }
+    const s = data.data;
+    $('webhookUrl').value = s.webhookUrl || '';
+    $('webhookSecret').value = '';
+    $('webhookSecret').placeholder = s.webhookSecret ? ('当前: ' + s.webhookSecret + '（留空不修改）') : '未设置';
+    $('notifyUserIds').value = (s.notifyUserIds && s.notifyUserIds.length) ? s.notifyUserIds.join(',') : '';
+    $('maxTextLength').value = s.maxTextLength || 5000;
+    $('timeoutSec').value = s.timeoutSec || 10;
+    $('retryCount').value = s.retryCount || 2;
+    $('eventType').value = s.eventType || 'receive_save_after';
+  } catch (e) {
+    show('加载失败: ' + e.message, false);
+  }
+}
+
+$('saveBtn').onclick = async function () {
+  const payload = {
+    webhookUrl: $('webhookUrl').value.trim(),
+    webhookSecret: $('webhookSecret').value.trim(),
+    notifyUserIds: $('notifyUserIds').value.split(/[,，\s]+/).filter(function (x) { return x !== ''; }).map(Number),
+    maxTextLength: parseInt($('maxTextLength').value) || 5000,
+    timeoutSec: parseInt($('timeoutSec').value) || 10,
+    retryCount: parseInt($('retryCount').value) || 2,
+    eventType: $('eventType').value.trim() || 'receive_save_after',
+  };
+  this.disabled = true;
+  try {
+    const res = await fetch(BASE + '/updateSetting', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    show(data.code === 0 ? '保存成功，已实时生效' : '保存失败: ' + data.message, data.code === 0);
+    if (data.code === 0) load();
+  } catch (e) {
+    show('保存失败: ' + e.message, false);
+  }
+  this.disabled = false;
+};
+
+$('testBtn').onclick = async function () {
+  this.disabled = true;
+  try {
+    const res = await fetch(BASE + '/testMessage', { method: 'POST' });
+    const data = await res.json();
+    show(data.code === 0 ? '测试消息已发送：' + data.message : '测试失败: ' + data.message, data.code === 0);
+  } catch (e) {
+    show('测试失败: ' + e.message, false);
+  }
+  this.disabled = false;
+};
+
+load();
+</script>
+</body>
+</html>

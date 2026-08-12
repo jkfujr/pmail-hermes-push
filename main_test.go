@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -107,6 +109,104 @@ func TestTruncate(t *testing.T) {
 	}
 	if len([]rune(got)) > 30 {
 		t.Fatalf("truncate too long: %d runes", len([]rune(got)))
+	}
+}
+
+// TestSettingsHtmlRoutes UI 路由：getSetting 脱敏 / updateSetting 热更新 / testMessage 校验
+func TestSettingsHtmlRoutes(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "cfg.json")
+	hook := &HermesPushHook{
+		cfg: PluginConfig{
+			WebhookURL:    "http://hermes:8644/webhooks/pmail-inbox",
+			WebhookSecret: "super-secret-value-123456",
+			NotifyUserIds: []int{1},
+			MaxTextLength: defaultMaxTextLength,
+			TimeoutSec:    defaultTimeoutSec,
+			RetryCount:    defaultRetryCount,
+			EventType:     defaultEventType,
+		},
+		cfgPath: cfgPath,
+		done:    map[int64]time.Time{},
+	}
+
+	// 默认返回 HTML 页面
+	html := hook.SettingsHtml(nil, "/api/plugin/settings/pmail_hermes_push", "")
+	if !strings.Contains(html, "pmail-hermes-push") || !strings.Contains(html, "webhookUrl") {
+		t.Fatalf("default settings page missing content")
+	}
+
+	// getSetting：secret 脱敏
+	resp := hook.SettingsHtml(nil, "getSetting", "")
+	var r struct {
+		Code int `json:"code"`
+		Data PluginConfig
+	}
+	if err := json.Unmarshal([]byte(resp), &r); err != nil || r.Code != 0 {
+		t.Fatalf("getSetting failed: %v %s", err, resp)
+	}
+	if r.Data.WebhookSecret != "supe****3456" {
+		t.Fatalf("secret not masked: %q", r.Data.WebhookSecret)
+	}
+
+	// updateSetting：修改并持久化
+	update := `{"webhookUrl":"http://new:8644/webhooks/pmail-inbox","webhookSecret":"","notifyUserIds":[1,2],"maxTextLength":3000,"eventType":"receive_save_after"}`
+	resp = hook.SettingsHtml(nil, "updateSetting", update)
+	if !strings.Contains(resp, `"code":0`) {
+		t.Fatalf("updateSetting failed: %s", resp)
+	}
+	// 新值生效（secret 未改保持旧值）
+	cur := hook.currentConfig()
+	if cur.WebhookURL != "http://new:8644/webhooks/pmail-inbox" || cur.WebhookSecret != "super-secret-value-123456" {
+		t.Fatalf("update not applied: %+v", cur)
+	}
+	if len(cur.NotifyUserIds) != 2 || cur.MaxTextLength != 3000 {
+		t.Fatalf("update fields wrong: %+v", cur)
+	}
+	// 文件已持久化
+	if _, err := os.Stat(cfgPath); err != nil {
+		t.Fatalf("config not persisted: %v", err)
+	}
+	// 重载后仍为新值
+	reloaded := mergeConfig(defaultConfig(), mustReadConfig(t, cfgPath))
+	if reloaded.WebhookURL != "http://new:8644/webhooks/pmail-inbox" {
+		t.Fatalf("reload mismatch: %+v", reloaded)
+	}
+
+	// updateSetting：secret 提交脱敏占位（含 *）也不修改
+	resp = hook.SettingsHtml(nil, "updateSetting", `{"webhookUrl":"http://new:8644/","webhookSecret":"supe****2345"}`)
+	if hook.currentConfig().WebhookSecret != "super-secret-value-123456" {
+		t.Fatalf("masked secret should not overwrite")
+	}
+
+	// testMessage：未配置 URL 时报错
+	hook2 := &HermesPushHook{cfg: PluginConfig{}, cfgPath: filepath.Join(t.TempDir(), "c.json"), done: map[int64]time.Time{}}
+	resp = hook2.SettingsHtml(nil, "testMessage", "")
+	if !strings.Contains(resp, `"code":-1`) {
+		t.Fatalf("testMessage should fail without URL: %s", resp)
+	}
+}
+
+// mustReadConfig 读取配置文件并解析
+func mustReadConfig(t *testing.T, path string) PluginConfig {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c PluginConfig
+	if err := json.Unmarshal(data, &c); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// TestMaskSecret 脱敏规则
+func TestMaskSecret(t *testing.T) {
+	if maskSecret("abcd") != "****" {
+		t.Fatalf("short secret mask wrong")
+	}
+	if maskSecret("1234567890abcdef") != "1234****cdef" {
+		t.Fatalf("mask wrong: %s", maskSecret("1234567890abcdef"))
 	}
 }
 
