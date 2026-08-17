@@ -14,8 +14,8 @@ PMail 触发 ReceiveSaveAfter hook（异步）
    │
    ▼
 本插件（独立进程，Unix socket 与 PMail 通信）
-   │  提取 Subject/From/To/Text(截断)/附件列表
-   ▼
+  │  提取 Subject/From/To/Text(截断)/附件列表/链接(HTML 锚点+纯文本 URL)
+  ▼
 POST → Hermes webhook（HMAC-SHA256 签名，Generic V2 带时间戳防重放）
    │
    ▼
@@ -24,6 +24,7 @@ Hermes agent 按订阅 prompt 筛选 → 转发到 QQ/Telegram 等
 
 - 插件是**薄转发器**，不做内容判断，筛选逻辑全部在 Hermes 侧
 - 只转发元信息 + 截断正文（默认 5000 字符），**不转发附件本体**
+- **自动提取可点击链接**：同时扫 HTML 的 `<a href>` 锚点（带锚文本）和纯文本里的裸 URL，去重后放进 `links` / `links_text` 字段——解决 Discord/Steam 等安全告警邮件"验证链接只在 HTML 里"导致通知里点不了链接的问题
 - 进程内按 MessageId 去重，避免重复通知
 
 ## 安装
@@ -98,13 +99,28 @@ PMail 后台 → 插件设置页，找到 pmail-hermes-push，直接填表单保
 ```bash
 hermes webhook subscribe pmail-inbox \
   --events "receive_save_after" \
-  --prompt "新邮件 {subject} 来自 {from.email}：{text} ..." \
+  --prompt "新邮件 {subject} 来自 {from.email}：{text} ... 链接：{links_text}" \
   --deliver <qq|telegram> \
   --deliver-chat-id "<你的ID>" \
   --secret "<和插件配置一致的 secret>"
 ```
 
 > webhook 平台需先启用：`hermes gateway setup` 或手动在 config.yaml 配置 `platforms.webhook`。
+
+## Webhook payload 字段
+
+| 字段 | 说明 |
+|---|---|
+| event_type | 事件名（默认 receive_save_after） |
+| message_id / msg_id | PMail 数据库 ID / RFC Message-ID（用于去重） |
+| subject / from / to / date | 邮件头信息 |
+| text | 纯文本正文（按 maxTextLength 截断） |
+| **links** | 提取到的链接列表 `[{text, url}]`（HTML 锚点 + 纯文本 URL，去重，最多 10 条） |
+| **links_text** | links 渲染成的多行文本 `锚文本: url`，prompt 里直接用 `{links_text}` |
+| attachments | 附件名/类型/大小（不含本体） |
+| recipient_user_ids | 收件人 UserID 列表 |
+
+> 在 prompt 里用 `{links_text}` 或 `{links}` 即可把链接带进通知。验证码/验证链接类邮件务必原样带上 URL，方便在 QQ/Telegram 里直接点。
 
 ## 签名格式（Generic V2）
 

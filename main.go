@@ -8,8 +8,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,7 +29,21 @@ const (
 	defaultTimeoutSec    = 10   // HTTP 超时
 	defaultRetryCount    = 2    // 失败重试次数
 	defaultEventType     = "receive_save_after"
+	maxLinks             = 10   // 最多提取的链接数
+	maxLinkLen           = 500  // 单个链接/锚文本最大长度（rune）
 	configPath           = "./plugins/pmail_hermes_push_config.json"
+)
+
+// 链接提取正则
+var (
+	// HTML <a href="...">anchor</a>，兼容单双引号、属性乱序
+	anchorRe = regexp.MustCompile(`(?is)<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a>`)
+	// 锚文本里的嵌套标签（<b>、<span> 等）剥掉
+	innerTagRe = regexp.MustCompile(`(?s)<[^>]*>`)
+	// 纯文本里的裸 URL：排除空白/引号/尖括号/中文标点/括号，ASCII 标点交给 urlTrimCutset 裁剪
+	textURLRe = regexp.MustCompile(`https?://[^\s<>"'，。；：！？、（）【】]+`)
+	// URL 尾部常见 ASCII 标点（句号/逗号/分号/冒号/叹号/问号 + 中文标点兜底）
+	urlTrimCutset = ",.;:!?，。；：！？、"
 )
 
 //go:embed settings.html
@@ -169,6 +185,10 @@ func (h *HermesPushHook) testMessage() string {
 		"to": []map[string]string{},
 		"date": time.Now().Format("2006-01-02 15:04:05"),
 		"text": "这是一条来自 PMail 插件的测试通知，验证 Hermes webhook 链路是否正常。",
+		"links": []map[string]string{
+			{"text": "查看验证链接", "url": "https://example.com/verify?token=test123"},
+		},
+		"links_text": "查看验证链接: https://example.com/verify?token=test123",
 		"attachments": []map[string]interface{}{},
 		"size":       0,
 		"recipient_user_ids": []int{},
@@ -288,6 +308,8 @@ func buildPayload(email *parsemail.Email, ue []*models.UserEmail, cfg PluginConf
 		}
 	}
 
+	links := extractLinks(email)
+
 	return map[string]interface{}{
 		"event_type":         cfg.EventType,
 		"message_id":         email.MessageId,
@@ -297,10 +319,82 @@ func buildPayload(email *parsemail.Email, ue []*models.UserEmail, cfg PluginConf
 		"to":                 to,
 		"date":               email.Date,
 		"text":               truncate(string(email.Text), cfg.MaxTextLength),
+		"links":              links,          // 结构化链接列表：[{text, url}]
+		"links_text":         linksText(links), // 渲染好的链接文本（一行一个），方便 prompt 直接用
 		"attachments":        attachments,
 		"size":               email.Size,
 		"recipient_user_ids": userIDs,
 	}
+}
+
+// extractLinks 从邮件 HTML（<a href> 锚点）和纯文本（裸 URL）中提取可点击链接。
+// 解决 HTML 邮件（如 Discord/Steam 安全告警）验证链接只存在于 HTML、纯文本部分没有 URL 的问题。
+// 去重、只保留 http(s)、限制数量与长度。
+func extractLinks(email *parsemail.Email) []map[string]string {
+	if email == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	links := make([]map[string]string, 0, maxLinks)
+
+	add := func(text, url string) {
+		if len(links) >= maxLinks {
+			return
+		}
+		u := strings.TrimSpace(url)
+		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			return
+		}
+		if seen[u] {
+			return
+		}
+		seen[u] = true
+		text = strings.TrimSpace(text)
+		if text == "" {
+			text = u
+		}
+		links = append(links, map[string]string{
+			"text": truncate(text, maxLinkLen),
+			"url":  truncate(u, maxLinkLen),
+		})
+	}
+
+	// 1) HTML 锚点：优先取锚文本（如"验证登录"），让通知里可读性更好
+	if len(email.HTML) > 0 {
+		htmlText := string(email.HTML)
+		for _, m := range anchorRe.FindAllStringSubmatch(htmlText, -1) {
+			href := html.UnescapeString(m[1])
+			inner := html.UnescapeString(innerTagRe.ReplaceAllString(m[2], " "))
+			inner = strings.Join(strings.Fields(inner), " ")
+			add(inner, href)
+		}
+	}
+
+	// 2) 纯文本裸 URL
+	if len(email.Text) > 0 {
+		for _, m := range textURLRe.FindAllString(string(email.Text), -1) {
+			u := strings.TrimRight(m, urlTrimCutset)
+			add(u, u)
+		}
+	}
+
+	return links
+}
+
+// linksText 把结构化链接渲染成"锚文本: url"多行文本，便于 webhook prompt 直接引用
+func linksText(links []map[string]string) string {
+	if len(links) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(links))
+	for _, l := range links {
+		if l["text"] != "" && l["text"] != l["url"] {
+			parts = append(parts, l["text"]+": "+l["url"])
+		} else {
+			parts = append(parts, l["url"])
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // signV2 计算 Generic V2 签名：HMAC-SHA256(secret, "<timestamp>.<body>") 的 hex

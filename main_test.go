@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Jinnrry/pmail/dto/parsemail"
 )
 
 // TestSignV2KnownVector 用固定向量验证签名格式：hex(HMAC-SHA256(secret, "<ts>.<body>"))
@@ -207,6 +209,94 @@ func TestMaskSecret(t *testing.T) {
 	}
 	if maskSecret("1234567890abcdef") != "1234****cdef" {
 		t.Fatalf("mask wrong: %s", maskSecret("1234567890abcdef"))
+	}
+}
+
+// TestExtractLinks HTML 锚点 + 纯文本 URL 提取、去重、过滤
+func TestExtractLinks(t *testing.T) {
+	email := &parsemail.Email{
+		HTML: []byte(`<html><body>
+			<p>New login detected.</p>
+			<a href="https://discord.com/verify?token=abc123" style="x">Verify Login</a>
+			<a href="mailto:help@discord.com">Mail us</a>
+			<a href="/relative/path">relative</a>
+			<a href="https://discord.com/verify?token=abc123"><b>dup</b> anchor</a>
+			<a href="https://example.com/foo&amp;bar">escaped &amp; link</a>
+		</body></html>`),
+		Text: []byte("If this was you, ignore. Otherwise: https://discord.com/reset\nsuffix https://example.com/trail, https://example.com/trail;"),
+	}
+	links := extractLinks(email)
+	if len(links) != 4 {
+		t.Fatalf("want 4 unique links, got %d: %+v", len(links), links)
+	}
+	// 第一条：锚文本保留
+	if links[0]["url"] != "https://discord.com/verify?token=abc123" {
+		t.Fatalf("first url wrong: %+v", links[0])
+	}
+	if links[0]["text"] != "Verify Login" {
+		t.Fatalf("anchor text wrong: %+v", links[0])
+	}
+	// HTML 实体解码
+	hasFoo := false
+	for _, l := range links {
+		if l["url"] == "https://example.com/foo&bar" {
+			hasFoo = true
+		}
+	}
+	if !hasFoo {
+		t.Fatalf("html entity url not decoded: %+v", links)
+	}
+	// mailto / 相对路径被过滤
+	for _, l := range links {
+		if strings.Contains(l["url"], "mailto") || strings.HasPrefix(l["url"], "/") {
+			t.Fatalf("junk link leaked: %+v", l)
+		}
+	}
+}
+
+// TestExtractLinksTextOnly 只有纯文本时也能提取 URL，且去掉尾部标点
+func TestExtractLinksTextOnly(t *testing.T) {
+	email := &parsemail.Email{
+		Text: []byte("点此验证: https://discord.com/verify?token=xyz，若非本人请忽略。"),
+	}
+	links := extractLinks(email)
+	if len(links) != 1 {
+		t.Fatalf("want 1 link, got %d: %+v", len(links), links)
+	}
+	if links[0]["url"] != "https://discord.com/verify?token=xyz" {
+		t.Fatalf("url should not include trailing punctuation: %+v", links[0])
+	}
+	if links[0]["text"] != links[0]["url"] {
+		t.Fatalf("text-only link should use url as text: %+v", links[0])
+	}
+}
+
+// TestLinksText 渲染格式：锚文本: url；无链接返回空串
+func TestLinksText(t *testing.T) {
+	if linksText(nil) != "" {
+		t.Fatalf("nil links should render empty")
+	}
+	links := []map[string]string{
+		{"text": "验证登录", "url": "https://discord.com/verify?token=1"},
+		{"text": "https://example.com", "url": "https://example.com"},
+	}
+	got := linksText(links)
+	want := "验证登录: https://discord.com/verify?token=1\nhttps://example.com"
+	if got != want {
+		t.Fatalf("linksText mismatch:\n got  %q\n want %q", got, want)
+	}
+}
+
+// TestExtractLinksCap 链接数量上限
+func TestExtractLinksCap(t *testing.T) {
+	var htmlParts []string
+	for i := 0; i < 20; i++ {
+		htmlParts = append(htmlParts, `<a href="https://example.com/`+strconv.Itoa(i)+`">link</a>`)
+	}
+	email := &parsemail.Email{HTML: []byte(strings.Join(htmlParts, " "))}
+	links := extractLinks(email)
+	if len(links) != maxLinks {
+		t.Fatalf("want %d links capped, got %d", maxLinks, len(links))
 	}
 }
 
